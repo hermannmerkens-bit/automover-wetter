@@ -226,17 +226,19 @@ def get_regensensor():
                       timeout=20)
     r.raise_for_status()
     controllers = (((r.json().get("data") or {}).get("me") or {}).get("controllers")) or []
-    kandidaten = []
-    for c in controllers:
-        for s in c.get("sensors") or []:
-            typ = (s.get("model") or {}).get("sensorType")
-            if HYDRAWISE_SENSOR:
-                if s.get("name") == HYDRAWISE_SENSOR:
-                    kandidaten.append(s)
-            elif typ in ("LEVEL_OPEN", "LEVEL_CLOSED"):   # Regensensoren (Kontaktsensor)
-                kandidaten.append(s)
+    alle = [s for c in controllers for s in (c.get("sensors") or [])]
+    if not alle:
+        raise RuntimeError(f"Hydrawise meldet {len(controllers)} Steuergeraet(e), aber keine Sensoren. "
+                           "Regensensor in der Hydrawise-App unter Steuergeraet > Sensoren einrichten.")
+    if HYDRAWISE_SENSOR:
+        kandidaten = [s for s in alle if s.get("name") == HYDRAWISE_SENSOR]
+    else:
+        # bevorzugt Kontakt-Regensensoren, sonst jeder Sensor ausser Durchflussmessern
+        kandidaten = ([s for s in alle if (s.get("model") or {}).get("sensorType") in ("LEVEL_OPEN", "LEVEL_CLOSED")]
+                      or [s for s in alle if (s.get("model") or {}).get("sensorType") != "FLOW"])
     if not kandidaten:
-        raise RuntimeError("Kein Regensensor im Hydrawise-Konto gefunden.")
+        gefunden = ", ".join(f"'{s.get('name')}' ({(s.get('model') or {}).get('sensorType')})" for s in alle)
+        raise RuntimeError(f"Kein passender Regensensor. Gefunden: {gefunden}")
     s = kandidaten[0]
     return s.get("name") or "Regensensor", bool((s.get("status") or {}).get("active"))
 
