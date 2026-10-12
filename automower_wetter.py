@@ -219,20 +219,24 @@ def get_regensensor():
     j = r.json() if r.content else {}
     if r.status_code >= 300 or "access_token" not in j:
         raise RuntimeError("Anmeldung bei Hydrawise fehlgeschlagen - E-Mail/Passwort pruefen.")
+    global _HYDRAWISE_AUTH
+    _HYDRAWISE_AUTH = f"{j.get('token_type', 'Bearer')} {j['access_token']}"
     query = ("{ me { controllers { name sensors { name "
              "model { sensorType } status { active } } } } }")
     r = requests.post(HYDRAWISE_GRAPH_URL, json={"query": query},
-                      headers={"Authorization": f"{j.get('token_type', 'Bearer')} {j['access_token']}"},
-                      timeout=20)
+                      headers={"Authorization": _HYDRAWISE_AUTH}, timeout=20)
     r.raise_for_status()
     controllers = (((r.json().get("data") or {}).get("me") or {}).get("controllers")) or []
     alle = [s for c in controllers for s in (c.get("sensors") or [])]
     if not alle:
         raise RuntimeError(f"Hydrawise meldet {len(controllers)} Steuergeraet(e), aber keine Sensoren. "
                            "Regensensor in der Hydrawise-App unter Steuergeraet > Sensoren einrichten.")
+    kandidaten = []
     if HYDRAWISE_SENSOR:
-        kandidaten = [s for s in alle if s.get("name") == HYDRAWISE_SENSOR]
-    else:
+        kandidaten = [s for s in alle if (s.get("name") or "").strip().lower() == HYDRAWISE_SENSOR.lower()]
+        if not kandidaten:
+            log(f"Hinweis: Sensorname '{HYDRAWISE_SENSOR}' nicht gefunden - waehle automatisch.")
+    if not kandidaten:
         # bevorzugt Kontakt-Regensensoren, sonst jeder Sensor ausser Durchflussmessern
         kandidaten = ([s for s in alle if (s.get("model") or {}).get("sensorType") in ("LEVEL_OPEN", "LEVEL_CLOSED")]
                       or [s for s in alle if (s.get("model") or {}).get("sensorType") != "FLOW"])
@@ -241,6 +245,50 @@ def get_regensensor():
         raise RuntimeError(f"Kein passender Regensensor. Gefunden: {gefunden}")
     s = kandidaten[0]
     return s.get("name") or "Regensensor", bool((s.get("status") or {}).get("active"))
+
+
+_HYDRAWISE_AUTH = None
+
+
+def _wert(v, art):
+    """LocalizedValueType {value, unit} in °C bzw. mm umrechnen."""
+    if not v or v.get("value") is None:
+        return None
+    x, einheit = float(v["value"]), (v.get("unit") or "").lower()
+    if art == "temp" and "f" in einheit:
+        x = (x - 32) * 5 / 9
+    if art == "regen" and einheit in ("in", "inch", "inches", '"'):
+        x = x * 25.4
+    return round(x, 1)
+
+
+def get_hydrawise_wetter():
+    """Temperatur und 24-h-Regen, die Hydrawise fuer das Steuergeraet verwendet.
+    Gibt dict oder None zurueck (nur nach erfolgreichem get_regensensor)."""
+    if not _HYDRAWISE_AUTH:
+        return None
+    lv = "{ value unit }"
+    query = ("{ me { controllers { name "
+             f"observationsSummary {{ currentTemperature {lv} rainfallLast24Hours {lv} }} "
+             f"weatherStations {{ location distance {lv} currentObservation {{ temperature {lv} }} }} "
+             "} } }")
+    r = requests.post(HYDRAWISE_GRAPH_URL, json={"query": query},
+                      headers={"Authorization": _HYDRAWISE_AUTH}, timeout=20)
+    r.raise_for_status()
+    j = r.json()
+    if j.get("errors") and not j.get("data"):
+        raise RuntimeError(str(j["errors"])[:200])
+    for c in (((j.get("data") or {}).get("me") or {}).get("controllers")) or []:
+        obs = c.get("observationsSummary") or {}
+        temp = _wert(obs.get("currentTemperature"), "temp")
+        regen = _wert(obs.get("rainfallLast24Hours"), "regen")
+        stationen = c.get("weatherStations") or []
+        name = (stationen[0].get("location") if stationen else None) or "Hydrawise"
+        if temp is None and stationen:
+            temp = _wert((stationen[0].get("currentObservation") or {}).get("temperature"), "temp")
+        if temp is not None or regen is not None:
+            return {"station": name, "temp": temp, "regen_24h": regen}
+    return None
 
 
 def gruende_gegen_maehen(wx, state):
@@ -278,6 +326,18 @@ def main():
                 log(f"Hunter-Regensensor '{sensor[0]}': {'NASS' if sensor[1] else 'trocken'}")
         except Exception as e:  # noqa: BLE001
             log(f"Warnung: Regensensor nicht abrufbar ({e}) - nehme DWD-Regendaten.")
+        try:
+            hw = get_hydrawise_wetter()
+            if hw:
+                log(f"Hydrawise-Wetter ({hw['station']}): {hw['temp']} °C, 24 h {hw['regen_24h']} mm "
+                    f"(DWD {wx['station']}: {wx['temp']} °C, 24 h {wx['regen_24h']} mm)")
+                if hw["temp"] is not None:
+                    wx["temp"] = hw["temp"]
+                if hw["regen_24h"] is not None:
+                    wx["regen_24h"] = hw["regen_24h"]
+                wx["station"] = f"{hw['station']} (Hydrawise)"
+        except Exception as e:  # noqa: BLE001
+            log(f"Hinweis: Hydrawise-Wetterdaten nicht abrufbar ({e}) - nehme DWD.")
         token = get_token()
         mower = get_mower(token)
         attr = mower.get("attributes", {})
@@ -321,3 +381,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
