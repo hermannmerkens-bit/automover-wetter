@@ -1,0 +1,63 @@
+name: Automower Wetterwaechter
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"      # alle 10 Minuten (GitHub kann sich um einige Minuten verspaeten)
+  workflow_dispatch:             # manueller Start ueber "Run workflow"
+    inputs:
+      testmodus:
+        description: "Nur testen, keine Befehle an den Maeher senden"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write                # damit der Status gespeichert werden kann
+
+concurrency:
+  group: automower
+  cancel-in-progress: false
+
+jobs:
+  pruefen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhaengigkeiten installieren
+        run: pip install --quiet requests
+
+      - name: Wetter pruefen und Maeher steuern
+        env:
+          TZ: Europe/Berlin
+          HUSQ_APP_KEY: ${{ secrets.HUSQ_APP_KEY }}
+          HUSQ_APP_SECRET: ${{ secrets.HUSQ_APP_SECRET }}
+          LAT: ${{ secrets.LAT }}
+          LON: ${{ secrets.LON }}
+          HYDRAWISE_USER: ${{ secrets.HYDRAWISE_USER }}
+          HYDRAWISE_PASSWORD: ${{ secrets.HYDRAWISE_PASSWORD }}
+          HYDRAWISE_SENSOR: ${{ vars.HYDRAWISE_SENSOR }}
+          MOWER_NAME: ${{ vars.MOWER_NAME }}
+          REGEN_AKTUELL_MM: ${{ vars.REGEN_AKTUELL_MM }}
+          REGEN_24H_MM: ${{ vars.REGEN_24H_MM }}
+          TEMP_MIN_C: ${{ vars.TEMP_MIN_C }}
+          TEMP_HYSTERESE_C: ${{ vars.TEMP_HYSTERESE_C }}
+          TESTMODUS: ${{ github.event_name == 'workflow_dispatch' && inputs.testmodus && 'true' || '' }}
+        run: python automower_wetter.py
+
+      - name: Status speichern
+        if: always()
+        run: |
+          git config user.name "automower-bot"
+          git config user.email "automower-bot@users.noreply.github.com"
+          git add automower_wetter_state.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "Status unveraendert."
+          else
+            git commit -m "Status aktualisiert"
+            git push
+          fi
