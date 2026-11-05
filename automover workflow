@@ -2,6 +2,62 @@ name: Automower Wetterwaechter
 
 on:
   schedule:
+    - cron: "7 * * * *"          # stuendlich anstossen; ein Lauf bleibt als Wachdienst bis knapp 6 h aktiv
+  workflow_dispatch:              # manueller Start ueber "Run workflow"
+    inputs:
+      testmodus:
+        description: "Nur testen, keine Befehle an den Maeher senden"
+        type: boolean
+        default: true
+      wache:
+        description: "Wachdienst sofort starten (bleibt bis knapp 6 h aktiv)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write                 # damit der Status gespeichert werden kann
+
+# Immer nur ein Wachdienst gleichzeitig; ein neuer wartet, bis der laufende endet.
+# Manuelle Einzeltests laufen sofort und unabhaengig davon.
+concurrency:
+  group: ${{ (github.event_name == 'schedule' || format('{0}', inputs.wache) == 'true') && 'automower-wache' || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  pruefen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Abhaengigkeiten installieren
+        run: pip install --quiet requests
+
+      - name: Wetter pruefen und Maeher steuern
+        env:
+          TZ: Europe/Berlin
+          HUSQ_APP_KEY: ${{ secrets.HUSQ_APP_KEY }}
+          HUSQ_APP_SECRET: ${{ secrets.HUSQ_APP_SECRET }}
+          LAT: ${{ secrets.LAT }}
+          LON: ${{ secrets.LON }}
+          MOWER_NAME: ${{ vars.MOWER_NAME }}
+          REGEN_AKTUELL_MM: ${{ vars.REGEN_AKTUELL_MM }}
+          REGEN_24H_MM: ${{ vars.REGEN_24H_MM }}
+          TEMP_MIN_C: ${{ vars.TEMP_MIN_C }}
+          TEMP_HYSTERESE_C: ${{ vars.TEMP_HYSTERESE_C }}
+          VORLAUF_MIN: ${{ vars.VORLAUF_MIN }}
+          INTERVALL_MIN: ${{ vars.INTERVALL_MIN }}
+          RUHE_AB_STUNDEN: ${{ vars.RUHE_AB_STUNDEN }}
+          WACHE: ${{ (github.event_name == 'schedule' || format('{0}', inputs.wache) == 'true') && 'true' || '' }}
+          TESTMODUS: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.testmodus) == 'true' && 'true' || '' }}
+        run: python automower_wetter.py: Automower Wetterwaechter
+
+on:
+  schedule:
     - cron: "*/10 * * * *"      # alle 10 Minuten (GitHub kann sich um einige Minuten verspaeten)
   workflow_dispatch:             # manueller Start ueber "Run workflow"
     inputs:
