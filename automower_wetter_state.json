@@ -1,4 +1,5 @@
 {
   "stand": "2026-11-08",
-  "geparkt_vom_skript": false
+  "geparkt_vom_skript": true,
+  "grund": "4.3 °C"
 }
